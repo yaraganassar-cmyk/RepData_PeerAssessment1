@@ -1,25 +1,91 @@
 ---
 title: "Reproducible Research: Peer Assessment 1"
-output: 
-  html_document:
-    keep_md: true
+output:
+html_document:
+keep_md: true
 ---
 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
 
-## Loading and preprocessing the data
+# Load libraries
+library(ggplot2)
+library(dplyr)
 
+# Load and preprocess data
+activity <- read.csv("activity.csv")
+activity$date <- as.Date(activity$date, "%Y-%m-%d")
 
+# Total steps per day
+daily_steps <- activity %>%
+group_by(date) %>%
+summarise(total_steps = sum(steps, na.rm = TRUE))
 
-## What is mean total number of steps taken per day?
+# Histogram of total steps per day
+ggplot(daily_steps, aes(x = total_steps)) +
+geom_histogram(binwidth = 2000, fill = "steelblue", color = "white") +
+labs(title = "Total Steps Per Day", x = "Total Steps", y = "Frequency") +
+theme_minimal()
 
+# Mean and median
+mean_steps <- mean(daily_steps$total_steps)
+median_steps <- median(daily_steps$total_steps)
+cat("Mean steps per day: ", round(mean_steps, 2), "\n")
+cat("Median steps per day:", median_steps, "\n")
 
+# Average steps per interval
+interval_avg <- activity %>%
+group_by(interval) %>%
+summarise(avg_steps = mean(steps, na.rm = TRUE))
 
-## What is the average daily activity pattern?
+# Time series plot
+ggplot(interval_avg, aes(x = interval, y = avg_steps)) +
+geom_line(color = "steelblue") +
+labs(title = "Average Daily Activity Pattern",
+x = "5-Minute Interval", y = "Average Steps") +
+theme_minimal()
 
+# Interval with max steps
+max_interval <- interval_avg$interval[which.max(interval_avg$avg_steps)]
+cat("Interval with max steps:", max_interval, "\n")
 
+# Total missing values
+cat("Total missing values:", sum(is.na(activity$steps)), "\n")
 
-## Imputing missing values
+# Impute missing values with interval mean
+activity_imputed <- activity %>%
+left_join(interval_avg, by = "interval") %>%
+mutate(steps = ifelse(is.na(steps), avg_steps, steps)) %>%
+select(steps, date, interval)
 
+# Histogram after imputation
+daily_steps_imputed <- activity_imputed %>%
+group_by(date) %>%
+summarise(total_steps = sum(steps))
 
+ggplot(daily_steps_imputed, aes(x = total_steps)) +
+geom_histogram(binwidth = 2000, fill = "darkorange", color = "white") +
+labs(title = "Total Steps Per Day (Imputed)", x = "Total Steps", y = "Frequency") +
+theme_minimal()
 
-## Are there differences in activity patterns between weekdays and weekends?
+cat("Mean steps (imputed): ", round(mean(daily_steps_imputed$total_steps), 2), "\n")
+cat("Median steps (imputed):", round(median(daily_steps_imputed$total_steps), 2), "\n")
+
+# Weekday vs Weekend
+activity_imputed$day_type <- ifelse(
+weekdays(activity_imputed$date) %in% c("Saturday", "Sunday"),
+"weekend", "weekday"
+)
+activity_imputed$day_type <- factor(activity_imputed$day_type,
+levels = c("weekday", "weekend"))
+
+interval_daytype <- activity_imputed %>%
+group_by(interval, day_type) %>%
+summarise(avg_steps = mean(steps), .groups = "drop")
+
+ggplot(interval_daytype, aes(x = interval, y = avg_steps)) +
+geom_line(color = "steelblue") +
+facet_wrap(~ day_type, ncol = 1) +
+labs(title = "Weekday vs Weekend Activity",
+x = "5-Minute Interval", y = "Average Steps") +
+theme_minimal()
