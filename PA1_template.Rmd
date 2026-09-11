@@ -1,91 +1,270 @@
 ---
 title: "Reproducible Research: Peer Assessment 1"
+author: "Yara Nassar"
 output:
-html_document:
-keep_md: true
+  html_document:
+    keep_md: true
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE, fig.path = "figure/")
 
-# Load libraries
+# Weekday names are locale dependent, so fix the locale for reproducibility
+Sys.setlocale("LC_TIME", "C")
+
 library(ggplot2)
 library(dplyr)
+```
 
-# Load and preprocess data
-activity <- read.csv("activity.csv")
-activity$date <- as.Date(activity$date, "%Y-%m-%d")
 
-# Total steps per day
+## Loading and preprocessing the data
+
+The raw data ships with this repository as `activity.zip`. The chunk below unzips
+it if needed, reads it in, and converts the `date` column from character to
+`Date`. The `interval` column is left as an integer identifier (0, 5, ..., 2355).
+
+```{r load-data}
+if (!file.exists("activity.csv")) {
+  unzip("activity.zip")
+}
+
+activity <- read.csv("activity.csv", stringsAsFactors = FALSE)
+activity$date <- as.Date(activity$date, format = "%Y-%m-%d")
+
+str(activity)
+summary(activity)
+```
+
+The dataset has `r format(nrow(activity), big.mark = ",")` observations covering
+`r length(unique(activity$date))` days, with
+`r format(sum(is.na(activity$steps)), big.mark = ",")` missing values in the
+`steps` column.
+
+
+## What is mean total number of steps taken per day?
+
+For this part of the assignment the missing values are ignored. Intervals with
+`NA` steps are dropped before the daily totals are computed, so a day
+contributes only the intervals that were actually recorded.
+
+```{r daily-totals}
 daily_steps <- activity %>%
-group_by(date) %>%
-summarise(total_steps = sum(steps, na.rm = TRUE))
+  filter(!is.na(steps)) %>%
+  group_by(date) %>%
+  summarise(total_steps = sum(steps), .groups = "drop")
 
-# Histogram of total steps per day
+head(daily_steps)
+```
+
+### Histogram of the total number of steps taken each day
+
+```{r histogram-raw, fig.width = 7, fig.height = 5}
 ggplot(daily_steps, aes(x = total_steps)) +
-geom_histogram(binwidth = 2000, fill = "steelblue", color = "white") +
-labs(title = "Total Steps Per Day", x = "Total Steps", y = "Frequency") +
-theme_minimal()
+  geom_histogram(binwidth = 2000, fill = "steelblue", colour = "white") +
+  labs(
+    title = "Total number of steps taken each day",
+    x = "Total steps per day",
+    y = "Frequency (number of days)"
+  ) +
+  theme_minimal()
+```
 
-# Mean and median
-mean_steps <- mean(daily_steps$total_steps)
+### Mean and median of the total number of steps per day
+
+```{r mean-median-raw}
+mean_steps   <- mean(daily_steps$total_steps)
 median_steps <- median(daily_steps$total_steps)
-cat("Mean steps per day: ", round(mean_steps, 2), "\n")
-cat("Median steps per day:", median_steps, "\n")
 
-# Average steps per interval
+mean_steps
+median_steps
+```
+
+The **mean** total number of steps taken per day is
+**`r format(round(mean_steps, 2), big.mark = ",", nsmall = 2)`** and the
+**median** is **`r format(median_steps, big.mark = ",")`**.
+
+
+## What is the average daily activity pattern?
+
+```{r interval-average}
 interval_avg <- activity %>%
-group_by(interval) %>%
-summarise(avg_steps = mean(steps, na.rm = TRUE))
+  filter(!is.na(steps)) %>%
+  group_by(interval) %>%
+  summarise(avg_steps = mean(steps), .groups = "drop")
 
-# Time series plot
+head(interval_avg)
+```
+
+### Time series plot of the average steps per 5-minute interval
+
+```{r time-series, fig.width = 7, fig.height = 5}
 ggplot(interval_avg, aes(x = interval, y = avg_steps)) +
-geom_line(color = "steelblue") +
-labs(title = "Average Daily Activity Pattern",
-x = "5-Minute Interval", y = "Average Steps") +
-theme_minimal()
+  geom_line(colour = "steelblue") +
+  labs(
+    title = "Average daily activity pattern",
+    x = "5-minute interval",
+    y = "Average number of steps (across all days)"
+  ) +
+  theme_minimal()
+```
 
-# Interval with max steps
-max_interval <- interval_avg$interval[which.max(interval_avg$avg_steps)]
-cat("Interval with max steps:", max_interval, "\n")
+### The 5-minute interval with the maximum average number of steps
 
-# Total missing values
-cat("Total missing values:", sum(is.na(activity$steps)), "\n")
+```{r max-interval}
+max_row      <- interval_avg[which.max(interval_avg$avg_steps), ]
+max_interval <- max_row$interval
+max_value    <- max_row$avg_steps
 
-# Impute missing values with interval mean
+max_row
+```
+
+Interval **`r max_interval`** (that is, `r sprintf("%02d:%02d", max_interval %/% 100, max_interval %% 100)`)
+contains the maximum number of steps on average, at
+**`r round(max_value, 2)`** steps.
+
+
+## Imputing missing values
+
+### Total number of missing values
+
+```{r count-missing}
+total_missing <- sum(is.na(activity$steps))
+total_missing
+```
+
+There are **`r format(total_missing, big.mark = ",")`** rows with a missing
+`steps` value. All of them fall on `r length(unique(activity$date[is.na(activity$steps)]))`
+days for which no data at all was recorded:
+
+```{r missing-days}
+activity %>%
+  filter(is.na(steps)) %>%
+  count(date, name = "missing_intervals")
+```
+
+### Imputation strategy
+
+**Strategy: replace each missing value with the mean number of steps for that
+same 5-minute interval, averaged across all days on which it was recorded.**
+
+The daily activity pattern is strongly structured by time of day (near zero
+overnight, a sharp morning peak), so the interval mean is a much better
+estimate for a missing reading than a single overall daily mean would be. Since
+every missing value belongs to a day with no readings at all, a per-day mean is
+not available, which rules that option out anyway.
+
+```{r impute}
 activity_imputed <- activity %>%
-left_join(interval_avg, by = "interval") %>%
-mutate(steps = ifelse(is.na(steps), avg_steps, steps)) %>%
-select(steps, date, interval)
+  left_join(interval_avg, by = "interval") %>%
+  mutate(steps = ifelse(is.na(steps), avg_steps, steps)) %>%
+  select(steps, date, interval)
 
-# Histogram after imputation
+# Confirm that no missing values remain
+sum(is.na(activity_imputed$steps))
+str(activity_imputed)
+```
+
+### Histogram of total steps per day after imputation
+
+```{r histogram-imputed, fig.width = 7, fig.height = 5}
 daily_steps_imputed <- activity_imputed %>%
-group_by(date) %>%
-summarise(total_steps = sum(steps))
+  group_by(date) %>%
+  summarise(total_steps = sum(steps), .groups = "drop")
 
 ggplot(daily_steps_imputed, aes(x = total_steps)) +
-geom_histogram(binwidth = 2000, fill = "darkorange", color = "white") +
-labs(title = "Total Steps Per Day (Imputed)", x = "Total Steps", y = "Frequency") +
-theme_minimal()
+  geom_histogram(binwidth = 2000, fill = "darkorange", colour = "white") +
+  labs(
+    title = "Total number of steps taken each day (missing values imputed)",
+    x = "Total steps per day",
+    y = "Frequency (number of days)"
+  ) +
+  theme_minimal()
+```
 
-cat("Mean steps (imputed): ", round(mean(daily_steps_imputed$total_steps), 2), "\n")
-cat("Median steps (imputed):", round(median(daily_steps_imputed$total_steps), 2), "\n")
+### Mean and median after imputation
 
-# Weekday vs Weekend
-activity_imputed$day_type <- ifelse(
-weekdays(activity_imputed$date) %in% c("Saturday", "Sunday"),
-"weekend", "weekday"
+```{r mean-median-imputed}
+mean_imputed   <- mean(daily_steps_imputed$total_steps)
+median_imputed <- median(daily_steps_imputed$total_steps)
+
+mean_imputed
+median_imputed
+```
+
+```{r comparison-table}
+comparison <- data.frame(
+  dataset = c("Missing values ignored", "Missing values imputed"),
+  mean    = c(mean_steps, mean_imputed),
+  median  = c(median_steps, median_imputed)
 )
-activity_imputed$day_type <- factor(activity_imputed$day_type,
-levels = c("weekday", "weekend"))
+comparison
+```
 
+**Do these values differ from the estimates in the first part of the
+assignment?** The mean is unchanged at
+`r format(round(mean_imputed, 2), big.mark = ",", nsmall = 2)`, and the median
+moves only slightly, from `r format(median_steps, big.mark = ",")` to
+`r format(round(median_imputed, 2), big.mark = ",", nsmall = 2)`.
+
+**What is the impact of imputing missing data on the estimates of the total
+daily number of steps?** Each of the eight previously empty days is now filled
+with exactly the average daily profile, so each contributes a total equal to the
+overall mean. The centre of the distribution therefore does not move, but the
+histogram bar containing the mean grows taller by eight days, and the total
+number of steps across the whole study period rises. The main effect is a
+reduction in apparent variability rather than a shift in level, which is a known
+drawback of mean imputation: it understates the true spread of the data.
+
+
+## Are there differences in activity patterns between weekdays and weekends?
+
+### Creating the weekday/weekend factor variable
+
+```{r day-type}
+activity_imputed <- activity_imputed %>%
+  mutate(
+    day_type = factor(
+      ifelse(weekdays(date) %in% c("Saturday", "Sunday"), "weekend", "weekday"),
+      levels = c("weekday", "weekend")
+    )
+  )
+
+table(activity_imputed$day_type)
+```
+
+### Panel plot comparing weekdays and weekends
+
+```{r panel-plot, fig.width = 7, fig.height = 6}
 interval_daytype <- activity_imputed %>%
-group_by(interval, day_type) %>%
-summarise(avg_steps = mean(steps), .groups = "drop")
+  group_by(interval, day_type) %>%
+  summarise(avg_steps = mean(steps), .groups = "drop")
 
 ggplot(interval_daytype, aes(x = interval, y = avg_steps)) +
-geom_line(color = "steelblue") +
-facet_wrap(~ day_type, ncol = 1) +
-labs(title = "Weekday vs Weekend Activity",
-x = "5-Minute Interval", y = "Average Steps") +
-theme_minimal()
+  geom_line(colour = "steelblue") +
+  facet_wrap(~ day_type, ncol = 1) +
+  labs(
+    title = "Average steps per 5-minute interval: weekdays vs weekends",
+    x = "5-minute interval",
+    y = "Average number of steps"
+  ) +
+  theme_minimal()
+```
+
+```{r daytype-summary}
+interval_daytype %>%
+  group_by(day_type) %>%
+  summarise(
+    mean_steps_per_interval = mean(avg_steps),
+    peak_interval           = interval[which.max(avg_steps)],
+    peak_avg_steps          = max(avg_steps),
+    .groups = "drop"
+  )
+```
+
+**Yes, the patterns differ.** On weekdays activity starts earlier and is
+dominated by a single sharp morning peak around interval 835 (08:35), after
+which the rest of the day is comparatively flat, consistent with a commute
+followed by a sedentary working day. On weekends activity begins later, the
+morning peak is lower, and steps are spread more evenly across the middle of the
+day, giving a higher average level of activity through the afternoon and into
+the evening.
